@@ -81,6 +81,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      # Access logs (see the `log` block in Caddyfile). A named volume, not stdout,
+      # so logs survive the container being recreated on every deploy — referral
+      # traffic from a marketing post is measured over days, across deploys.
+      - caddy_logs:/var/log/caddy
     depends_on:
       - server
       - client
@@ -89,3 +93,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  caddy_logs:

@@ -16,6 +16,32 @@
 suethemchickens.online, www.suethemchickens.online {
 	encode gzip zstd
 
+	# Access logging exists to measure referral traffic from marketing posts (a
+	# ?utm_source=... link, a Reddit/HN referrer) server-side. GA4 cannot be relied on
+	# for this: the cookie-consent banner only mounts on `/` (see CLAUDE.md's Consent
+	# Mode section), so a visitor landing straight on /play never consents, GA4 stays
+	# in cookieless/modeled mode, and at low traffic volume that surfaces as nothing
+	# at all. Caddy's own log is the ground truth instead.
+	#
+	# Logged to a file in the caddy_logs named volume, NOT stdout: every deploy
+	# recreates the container (see .github/workflows/docker.yml), which would discard
+	# a stdout/json-file log — and a marketing post is measured over days, across
+	# deploys. Caddy's own roller caps disk use (10 MiB x 5 files, 30 days).
+	#
+	# The JSON format records request.uri (path AND query string, so utm_* params are
+	# captured) and request.headers (including Referer/User-Agent; Caddy redacts
+	# Cookie/Authorization automatically). Socket.IO and health traffic is logged too
+	# — filter it out when reading rather than dropping it here, since it's genuinely
+	# useful for debugging; see CLAUDE.md's deployment section for the jq one-liner.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format json
+	}
+
 	@backend path /socket.io/* /api/* /health
 	handle @backend {
 		reverse_proxy server:3001

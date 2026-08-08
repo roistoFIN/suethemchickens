@@ -2268,6 +2268,36 @@ for a fresh box (hardened SSH, ufw, Docker, a `deploy` user, a passphrase-less C
 SSH keypair) — meant to be run by a human watching the output, not automated, since SSH
 hardening can lock you out if it goes wrong partway through.
 
+**Caddy access logging is the only server-side traffic measurement that exists** — added
+because GA4 provably can't measure a marketing link that points anywhere other than `/`.
+The cookie-consent banner only mounts in `Home.tsx` (see *Consent-gated Google
+Analytics/Ads* above), so a visitor arriving directly on `/play` — which is exactly what
+an external link should point at, and what r/WebGames' rules actually require, since `/`
+is a hub page and their P4.iii bans linking a "collection or directory" — never sees the
+banner, never consents, and GA4 stays in cookieless/modeled mode, which at this site's
+traffic volume surfaces as nothing at all. The `log` block in `Caddyfile` records
+`request.uri` (path AND query string, so `utm_*` params on a campaign link are captured)
+and `request.headers` (Referer/User-Agent; Caddy redacts Cookie/Authorization itself).
+
+Written to a **file in the `caddy_logs` named volume, deliberately not stdout** — every
+deploy recreates the container, which would discard a stdout/json-file log, and a
+marketing post is measured over days, across deploys. Caddy's own roller caps disk use
+(10 MiB × 5 files, 30 days), so nothing external needs to rotate it. Socket.IO/health
+traffic is logged too rather than dropped via `log_skip` — it's genuinely useful for
+debugging, and filtering at read time is strictly more flexible than discarding lines
+permanently. Read it on the box with e.g.
+
+```bash
+docker exec stc-caddy sh -c 'cat /var/log/caddy/access.log*' \
+  | jq -r 'select(.request.uri | test("utm_campaign=<campaign>")) | .request.remote_ip' \
+  | sort -u | wc -l
+```
+
+A `Caddyfile` edit is not covered by any test layer in this repo and a bad one takes the
+whole site down on next deploy (Caddy refuses to start), so validate before pushing:
+`docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate
+--config /etc/caddy/Caddyfile --adapter caddyfile`.
+
 `prisma` had to move from `server/package.json`'s `devDependencies` to `dependencies` —
 the production image's `npm ci --omit=dev` would otherwise ship without the CLI
 `prisma migrate deploy` needs. `db:migrate:deploy` (new, both root and server
