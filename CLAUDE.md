@@ -2288,10 +2288,18 @@ debugging, and filtering at read time is strictly more flexible than discarding 
 permanently. Read it on the box with e.g.
 
 ```bash
-docker exec stc-caddy sh -c 'cat /var/log/caddy/access.log*' \
-  | jq -r 'select(.request.uri | test("utm_campaign=<campaign>")) | .request.remote_ip' \
-  | sort -u | wc -l
+# hits on a campaign link
+docker exec stc-caddy sh -c 'cat /var/log/caddy/access.log*' | grep -c 'utm_campaign=<campaign>'
+# unique-ish visitors (by client IP)
+docker exec stc-caddy sh -c 'cat /var/log/caddy/access.log*' | grep 'utm_campaign=<campaign>' \
+  | grep -o '"client_ip":"[^"]*"' | cut -d'"' -f4 | sort -u | wc -l
 ```
+
+**`jq` is deliberately not used here — it isn't installed on the VPS** (verified; the box
+is a bare Docker host, and `deploy` would need sudo to add it). These `grep`/`cut` forms
+were tested against the real production log and need nothing but a shell. If `jq` ever
+does get installed, the equivalent is
+`jq -r 'select(.request.uri | test("<campaign>")) | .request.client_ip'`.
 
 A `Caddyfile` edit is not covered by any test layer in this repo and a bad one takes the
 whole site down on next deploy (Caddy refuses to start), so validate before pushing:
