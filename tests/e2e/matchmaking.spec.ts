@@ -174,7 +174,14 @@ test.describe('Root URL routing', () => {
   // as it always did, not 404 or strand the visitor on the hub.
   test('bare root shows the Home hub, not Matchmaking', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('button', { name: /Play Now/i })).toBeVisible();
+    // Role is 'link', NOT 'button' — Home's Play Now is a Mantine `Button
+    // component="a" href="/play"`, i.e. a real <a> doing a full page load, per the
+    // deliberate "no client-side nav between static pages" convention in App.tsx's doc
+    // comment. An <a href> has the ARIA role 'link', so getByRole('button') never
+    // matches it; this assertion was written as 'button' and failed in all three
+    // browsers from the day it landed. Don't "fix" it back without first changing how
+    // Home.tsx renders that element.
+    await expect(page.getByRole('link', { name: /Play Now/i })).toBeVisible();
     await expect(page.getByLabel('Your Name')).not.toBeVisible();
   });
 
