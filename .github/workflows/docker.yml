@@ -12,6 +12,12 @@ on:
       - 'client/Dockerfile'
       - 'docker-compose.yml'
       - 'docker-compose.prod.yml'
+      # The deploy job scp's Caddyfile to the box (see the "Copy compose/Caddy config
+      # to server" step), so a Caddyfile-only change MUST trigger this workflow —
+      # without this line it silently wouldn't, and the box would keep serving the old
+      # config with CI green and no error anywhere. Caddy is the TLS terminator and the
+      # sole public entry point, so that failure mode is worth guarding explicitly.
+      - 'Caddyfile'
   workflow_dispatch:
 
 env:

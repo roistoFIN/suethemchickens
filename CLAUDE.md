@@ -2261,6 +2261,14 @@ than letting the client's own nginx `/api` proxy (still there for local
 `.github/workflows/docker.yml` builds+pushes `server`/`client` images to GHCR on every
 push to `main` (tagged by short SHA/branch/`latest`), then SSHes into the box to pull,
 run `prisma migrate deploy` via a throwaway `server` container, and restart the stack.
+It is **`paths`-filtered**, so a docs-only commit deliberately doesn't redeploy — but
+that filter must list every file the deploy job actually ships, not just the ones that
+go into an image: the deploy job scp's `Caddyfile` alongside `docker-compose.prod.yml`,
+so `Caddyfile` is in the filter too. It was missing at first, which meant a
+Caddyfile-only change would have silently never deployed (CI green, no error, box still
+serving the old config); the access-logging change that exposed this only deployed
+because it happened to touch `docker-compose.prod.yml` as well. Add a path here whenever
+the deploy job learns to copy another file.
 Needs three repo secrets (`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`) and the GHCR
 `server`/`client` packages set to public visibility (one-time, in repo Settings) so the
 box can pull without credentials. `deploy/server-setup.sh` is the one-time root bootstrap
