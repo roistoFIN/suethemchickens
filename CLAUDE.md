@@ -1486,6 +1486,39 @@ visitor, same as anyone who explicitly rejects. `AdSlot`'s own "no consent, no a
 already handles this gracefully (nothing renders, nothing crashes); this is a deliberate
 product tradeoff (ask once, don't interrupt play), not an oversight.
 
+**That tradeoff turned out to cost more than expected, so the banner now ALSO mounts on
+`/play`'s landing branch — but nowhere else.** The "consequence worth knowing" above
+stopped being hypothetical the first time real external traffic arrived: a r/WebGames
+post drove 23 unique visitors and 7 played matches (measured in Caddy's access log — see
+*Production deployment* above), and GA4 recorded literally **zero** of it. Every one of
+them landed directly on `/play`, never loaded `/`, never saw the banner, so
+`analytics_storage` stayed denied for the whole visit — and a denied visitor only
+produces cookieless "modeled" pings, which Google won't surface below an aggregate
+volume this site doesn't have. Since an external link essentially *must* point at `/play`
+(`/` is a hub page, and r/WebGames' P4.iii bans linking a "collection or directory"),
+that blind spot applied to all inbound marketing traffic, which is precisely the traffic
+worth measuring. The GA4 tag itself was verified fine — `G-6HNSW83104` and the gtag
+loader are both in the deployed bundle; nothing was broken, the visitors simply never
+consented.
+
+Mounted in **`Matchmaking.tsx`'s landing branch only** (the final return — name entry +
+Join/Create), never the room-lobby branch above it, and never `GamePhase`/`GameOver`
+(which `App.tsx` renders instead of `Matchmaking` entirely). The original objection is
+respected rather than reverted: the landing screen is as passive as the hub page with
+nothing time-sensitive to cover, and it's strictly *before* a player enters a room —
+whereas the lobby's chat input has the same fixed-overlay problem a live round does.
+Same `pb={consentBannerVisible ? 140 : 0}` reservation `Home.tsx` uses. Verified at a
+390px mobile viewport that the banner doesn't cover the name field or the Quick Play CTA.
+Regression-tested in `tests/e2e/matchmaking.spec.ts` ("a first-time visitor on /play sees
+the consent banner", and a companion asserting it does NOT follow the player into the
+room lobby) — E2E rather than unit, since this workspace runs Vitest without jsdom and
+there's no pure logic to extract here beyond the one-line `consentBannerVisible`.
+
+Two things this deliberately does NOT fix: a visitor who lands on `/play` and immediately
+clicks Create/Join without answering still contributes nothing to GA4, and anyone who
+rejects never will by design. The Caddy access log remains the ground truth for
+marketing attribution; GA4 is the richer-but-partial view on top of it.
+
 ### Search-engine/crawler files — real favicon, robots.txt, sitemap.xml, per-page metadata
 
 A follow-up audit ("are the search-engine-related files OK?") found several real gaps

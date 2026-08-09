@@ -185,6 +185,29 @@ test.describe('Root URL routing', () => {
     await expect(page.getByLabel('Your Name')).not.toBeVisible();
   });
 
+  // ConsentBanner mounts on the /play LANDING branch only — see Matchmaking.tsx's own
+  // comment above `consentBannerVisible` for the full reasoning (an external link must
+  // point at /play, and a visitor who never loads `/` never consents, so GA4 saw
+  // literally zero of a real Reddit post's 23 visitors). These two guard the split: the
+  // banner must appear for a first-time visitor on /play, and must NOT follow them into
+  // the room lobby, where a fixed bottom overlay would sit on the chat input.
+  test('a first-time visitor on /play sees the consent banner', async ({ page }) => {
+    await page.goto('/play');
+    await expect(page.getByRole('button', { name: 'Accept All' })).toBeVisible();
+  });
+
+  test('the consent banner does not follow the player into the room lobby', async ({ page }) => {
+    await page.goto('/play');
+    await expect(page.getByRole('button', { name: 'Accept All' })).toBeVisible();
+    await page.getByLabel('Your Name').fill('ConsentPlayer');
+    await page.getByRole('button', { name: /Create New Room/i }).click();
+
+    // In the lobby now — the banner is gone even though consent was never decided,
+    // because only the landing branch mounts it.
+    await expect(page.getByText(/Room Lobby/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Accept All' })).not.toBeVisible();
+  });
+
   test('a legacy root invite link (?room= with no /play) still opens the join flow', async ({ page }) => {
     await page.goto('/?room=test-room-code');
     const roomCodeInput = page.getByLabel('Room Code');

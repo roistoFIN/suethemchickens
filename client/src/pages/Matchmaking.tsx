@@ -19,6 +19,7 @@ import {
   ScrollArea,
   Image,
   Modal,
+  Box,
 } from '@mantine/core';
 import { IconCopy, IconCheck, IconShieldLock, IconMessageStar, IconHome } from '@tabler/icons-react';
 import { useSocketStore } from '../stores/socketStore';
@@ -27,6 +28,8 @@ import { useChatStore } from '../stores/chatStore';
 import FeedbackForm from '../components/FeedbackForm';
 import ShareButton from '../components/ShareButton';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
+import ConsentBanner from '../components/ConsentBanner';
+import { useConsentStore } from '../stores/consentStore';
 import { usePageMeta } from '../lib/usePageMeta';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
@@ -123,6 +126,31 @@ const Matchmaking: React.FC = () => {
   const { send, on } = useSocketStore();
   const { room, player, error, setError } = useGameStore();
   const { messages: chatMessages, show: showChat, hide: hideChat } = useChatStore();
+
+  /** ConsentBanner mounts on the LANDING branch of this component only (see the final
+   * return) — never in the room-lobby branch above it, and never in GamePhase/GameOver,
+   * which App.tsx renders instead of this component entirely.
+   *
+   * Why it's here at all, having been deliberately removed from `/play` once before: a
+   * visitor who arrives straight on `/play` from an external link never loads `/`, so
+   * they never saw the banner, so `analytics_storage` stayed at its ALL_DENIED default
+   * for the whole visit — and a denied visitor only produces cookieless "modeled" pings
+   * that Google won't surface below a large aggregate volume this site doesn't have.
+   * Measured for real: a Reddit post driving 23 unique visitors and 7 played matches
+   * (confirmed in Caddy's own access log) registered as literally zero in GA4, because
+   * every one of them landed on /play. Since an external link must point at /play — `/`
+   * is a hub page, and r/WebGames' P4.iii bans linking a "collection or directory" —
+   * that blind spot applies to essentially all inbound marketing traffic.
+   *
+   * The original objection stands and is respected: a fixed bottom overlay has no good
+   * place to sit over a live 120-second round, and the room lobby's chat input has the
+   * same problem. Hence the landing-only mount — that screen is as passive as the hub
+   * page, with nothing time-sensitive to cover, and it's strictly BEFORE a player has
+   * entered a room. Same `pb={140}` reservation Home.tsx uses, so the banner can't cover
+   * the Privacy/Feedback row beneath it. */
+  const hasDecidedConsent = useConsentStore((s) => s.hasDecided);
+  const consentSettingsOpen = useConsentStore((s) => s.settingsOpen);
+  const consentBannerVisible = !hasDecidedConsent || consentSettingsOpen;
 
   /** A failed join/create attempt (name taken, room full, kicked, etc.) shouldn't leave
    * the loading overlay stuck forever — there's nothing else that resets these on error. */
@@ -415,7 +443,10 @@ const Matchmaking: React.FC = () => {
     );
   }
 
+  // Landing (name entry + Join/Create) — the ONLY branch of this component that mounts
+  // ConsentBanner. See the `consentBannerVisible` note above the return for why.
   return (
+    <Box pb={consentBannerVisible ? 140 : 0}>
     <Container size="sm" py="xl">
       <Paper p="xl" pos="relative" style={mmStyles.paper}>
         <LoadingOverlay visible={isCreating || isSearching} />
@@ -616,6 +647,8 @@ const Matchmaking: React.FC = () => {
         <FeedbackForm source="landing" onClose={() => setFeedbackOpen(false)} />
       </Modal>
     </Container>
+    <ConsentBanner />
+    </Box>
   );
 };
 
