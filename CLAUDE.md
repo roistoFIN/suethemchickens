@@ -579,6 +579,28 @@ color is unaffected and still config-driven. `RiskBreakdownView` (opened by clic
 chip) deliberately stays numeric — it recomputes live from current state every time it
 opens, so it isn't stale the way the snapshot is.
 
+**The Dig Deeper button states its payoff, not just its price** — a real, externally
+reported discoverability gap (r/playmygame, 2026-08-11), and the first unsolicited
+feedback this game ever got from a stranger. A player asked for "a tiny evidence log
+during negotiations: what they did, your chance of winning and the possible damages", so
+losing a trial would feel "like a risk you chose instead of RNG punching you". Every one
+of those three already existed behind Dig Deeper; told so, they replied they'd never found
+it and that the button should be more obvious "because that's exactly the info I wanted
+before risking a trial". Nothing was missing — the path to it was unlabelled, and the one
+place that DID explain it (`CaseCard`'s gray "Unknown" chip) explained it in a `title`
+tooltip, i.e. hover-only, i.e. nonexistent on the touch devices most inbound traffic
+arrives on. Fixed cosmetically only, no logic touched: `GamePhase.tsx`'s new pure
+`nextDigRevealLabel(hasDecisionName, hasGrounds)` renders a visible line above
+`AttackHintCard`'s button ("Reveals what they actually did" → "Reveals your grounds to sue
+— and your odds of winning"), `CaseCard`'s defendant-side button gained the equivalent
+visible line, and both buttons went `variant="outline"` → `"filled"`. Keyed off what the
+card has actually been GIVEN rather than a raw `investigationLevel`, deliberately —
+`effectiveInvestigationLevel` silently +1s every tier in a two-player game (see *heads-up
+shortcut* above), so a level number doesn't reliably predict what the next dig reveals but
+"do I have the decision name / the grounds yet" does. Regression-tested in
+`GamePhase.utils.test.ts`'s `nextDigRevealLabel` describe block, including the
+never-promise-odds-a-tier-early case.
+
 ### `SUE THEM CHICKENS` offers the whole decision library's grounds, not just a target's actual ones
 
 `getGroundsAgainst` returns every `legalRisks` entry across the *entire* library,

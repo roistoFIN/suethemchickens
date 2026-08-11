@@ -38,6 +38,18 @@ export interface DevlogEntry {
  */
 export const DEVLOG_ENTRIES: DevlogEntry[] = [
   {
+    date: 'August 11, 2026',
+    title: 'A stranger told us our best feature was invisible',
+    tag: 'Design',
+    paragraphs: [
+      "We posted the game to a game-sharing community and got exactly one substantive reply. It asked for a feature: a small evidence log during a lawsuit negotiation showing what the rival actually did, your chance of winning, and the damages at stake — so that, as they put it, losing a trial would feel like a risk you chose rather than random chance punching you in the face.",
+      "The awkward part is that all three of those things already existed. That is precisely what the Dig Deeper button uncovers: first who did what to you, then the exact decision they deployed, then every legal ground you could sue them on with an estimated chance of success and the money at stake on each. It's the single most important mechanic in the game, and it had been shipped, tested and documented for months. We replied pointing this out, and got the reply that actually mattered: \"I didn't catch that from the clip. If it's already there, I'd make the button a little more obvious, because that's exactly the info I wanted before risking a trial.\"",
+      "That is a much more useful bug report than a feature request. Nothing was missing — the path to the information simply wasn't labelled. The button announced its price ($10,000) and said nothing whatsoever about what you got for the money. Worse, the one place that did explain it, on a lawsuit you're defending, was a hover tooltip, which means it did not exist at all for anyone playing on a phone.",
+      "So the fix is small and entirely cosmetic: the button now states its payoff before its price, and changes what it promises depending on how far you've already dug — \"Reveals what they actually did\" while your attacker is still anonymous, then \"Reveals your grounds to sue — and your odds of winning\" once you know what they deployed. It's a filled button now rather than a faint outline, because on an un-investigated attack it is the primary thing you should be doing. Not one line of game logic changed.",
+      "The lesson we're taking from it is uncomfortable and probably generalisable: a mechanic that is fully implemented, correct, and undiscovered is worth approximately zero. We had no way of knowing this from our own play-testing, because we already knew where everything was.",
+    ],
+  },
+  {
     date: 'August 6, 2026',
     title: 'Rebuilding the site around real content: a homepage, four new guides, and a quieter cookie banner',
     tag: 'Site & Growth',

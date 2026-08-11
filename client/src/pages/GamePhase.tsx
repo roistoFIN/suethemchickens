@@ -100,6 +100,29 @@ function likelihoodLabel(p: number): string {
   return 'Highly Unlikely';
 }
 
+/**
+ * What the NEXT "Dig Deeper" on an incoming-attack hint will actually reveal, in plain
+ * language, so the button states its own payoff instead of just its price.
+ *
+ * A real, reported gap (r/playmygame, 2026-08-11): a player asked for "a tiny evidence
+ * log during negotiations: what they did, your chance of winning and the possible
+ * damages", so that "losing a trial feels like a risk you chose instead of RNG punching
+ * you". All of that already exists behind Dig Deeper — they simply never found it, and
+ * on being told, replied that the button should be more obvious "because that's exactly
+ * the info I wanted before risking a trial". Nothing was missing; the path to it was
+ * unlabelled.
+ *
+ * Keyed off what the card has actually been given rather than a raw level number, since
+ * `effectiveInvestigationLevel` can silently +1 every tier when only two players remain
+ * (see CLAUDE.md's *heads-up shortcut*) — so a level number does not reliably predict
+ * what the next dig shows, but "do I have the decision name / the grounds yet" does.
+ */
+function nextDigRevealLabel(hasDecisionName: boolean, hasGrounds: boolean): string {
+  if (!hasDecisionName) return 'Reveals what they actually did';
+  if (!hasGrounds) return 'Reveals your grounds to sue — and your odds of winning';
+  return 'Reveals more about this';
+}
+
 /** How a KPI moved since last turn. `undefined` means "no prior turn to compare" (round 1). */
 type Trend = 'up' | 'down' | 'same';
 
@@ -2589,12 +2612,17 @@ function CaseCard({ caseData, myPlayerId, playerNames, onRiskInfo, negotiationPe
         <Text style={{ ...boldStyle, fontSize: '0.85rem' }}>{fmt(caseData.stakes)}</Text>
       </Flex>
 
-      {/* Defendant-only: pay to reveal the probability of success on this case */}
+      {/* Defendant-only: pay to reveal the probability of success on this case. The
+          explainer line is visible rather than living only in the gray chip's `title`
+          tooltip above — same reasoning as AttackHintCard's, see nextDigRevealLabel. */}
       {isDefendant && !knowsOdds && (
         <Stack gap={4} mt="sm">
+          <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', lineHeight: 1.3 }}>
+            Reveals your odds of winning this case
+          </Text>
           <Button
             size="xs"
-            variant="outline"
+            variant="filled"
             color="gray"
             fullWidth
             loading={digging}
@@ -3078,18 +3106,27 @@ function AttackHintCard({ attack, cash, digDeeperCost, filingCost, maxLawsuits, 
         </Stack>
       )}
 
+      {/* The payoff line above the button is the whole point — see nextDigRevealLabel's
+          doc comment. It's a real visible line, not a `title` tooltip, since a tooltip is
+          hover-only and therefore invisible on touch devices, which is where most of this
+          game's inbound traffic actually lands. Filled rather than outline for the same
+          reason: this is the primary action on an un-investigated hint, not a footnote. */}
       {!fullyInvestigated && (
-        <Button
-          size="xs"
-          variant="outline"
-          color={digButtonColor}
-          fullWidth
-          mt={8}
-          disabled={!canAfford}
-          onClick={() => socket?.emit(ClientEvents.GAME_DIG_DEEPER, { attackId: attack.attackId })}
-        >
-          🔍 Dig Deeper (${digDeeperCost.toLocaleString()}){!canAfford ? ' — not enough cash' : ''}
-        </Button>
+        <Stack gap={4} mt={8}>
+          <Text size="xs" c="dimmed" style={{ fontStyle: 'italic', lineHeight: 1.3 }}>
+            {nextDigRevealLabel(!!attack.decisionName, !!attack.suggestedGrounds && attack.suggestedGrounds.length > 0)}
+          </Text>
+          <Button
+            size="xs"
+            variant="filled"
+            color={digButtonColor}
+            fullWidth
+            disabled={!canAfford}
+            onClick={() => socket?.emit(ClientEvents.GAME_DIG_DEEPER, { attackId: attack.attackId })}
+          >
+            🔍 Dig Deeper (${digDeeperCost.toLocaleString()}){!canAfford ? ' — not enough cash' : ''}
+          </Button>
+        </Stack>
       )}
     </div>
   );

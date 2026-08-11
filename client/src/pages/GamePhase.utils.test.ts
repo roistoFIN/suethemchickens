@@ -39,6 +39,16 @@ function likelihoodLabel(p: number): string {
   return 'Highly Unlikely';
 }
 
+/** What the next "Dig Deeper" on an incoming-attack hint reveals — see GamePhase.tsx's
+ * own copy for why the button states its payoff and not just its price. Keyed off what
+ * the card already HAS, not a raw level number, because `effectiveInvestigationLevel`
+ * can +1 every tier in a two-player game. */
+function nextDigRevealLabel(hasDecisionName: boolean, hasGrounds: boolean): string {
+  if (!hasDecisionName) return 'Reveals what they actually did';
+  if (!hasGrounds) return 'Reveals your grounds to sue — and your odds of winning';
+  return 'Reveals more about this';
+}
+
 // ── Lawsuit grounds derivation (SueModal) — the whole decision library's legal-risk
 // catalog, not scoped to what a specific target has actually deployed, so a player can
 // knowingly guess a ground the target may or may not have actually pursued ──
@@ -791,6 +801,28 @@ describe('GamePhase utilities', () => {
     it('should return Highly Likely from 80% and up', () => {
       expect(likelihoodLabel(0.8)).toBe('Highly Likely');
       expect(likelihoodLabel(1.0)).toBe('Highly Likely');
+    });
+  });
+
+  // Regression coverage for a real, reported discoverability gap (r/playmygame,
+  // 2026-08-11): a player wanted "your chance of winning" before risking a trial, never
+  // found Dig Deeper, and said the button should say so. The label must name the odds at
+  // the tier that actually reveals them, and must never promise them a tier too early.
+  describe('nextDigRevealLabel', () => {
+    it('promises the decision itself while the attacker is still anonymous', () => {
+      expect(nextDigRevealLabel(false, false)).toBe('Reveals what they actually did');
+    });
+
+    it('does not promise odds before the decision is even known', () => {
+      expect(nextDigRevealLabel(false, false)).not.toContain('odds');
+    });
+
+    it('promises grounds and odds once the decision is known but grounds are not', () => {
+      expect(nextDigRevealLabel(true, false)).toBe('Reveals your grounds to sue — and your odds of winning');
+    });
+
+    it('falls back to generic copy once grounds are already shown', () => {
+      expect(nextDigRevealLabel(true, true)).toBe('Reveals more about this');
     });
   });
 

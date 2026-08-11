@@ -38,6 +38,16 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.94',
+    date: 'August 11, 2026',
+    tagline: 'Dig Deeper now tells you what it actually buys you',
+    highlights: [
+      "The Dig Deeper button on an incoming-attack card now says what the next dig will reveal — \"Reveals what they actually did\" at first, then \"Reveals your grounds to sue — and your odds of winning\" once you know the decision. It's also a solid, filled button now instead of a faint outline.",
+      "Same treatment for defending a lawsuit: the Dig Deeper button on a case you're defending now spells out that it reveals your odds of winning that case, instead of hiding that in a tooltip you'd only find by hovering — which was invisible on a phone entirely.",
+      "Nothing about the underlying mechanic changed: the odds, the grounds and the stakes were always there to be uncovered. A player told us they never found them and assumed trial verdicts were pure luck, which is a fair thing to conclude when the path to the information isn't labelled.",
+    ],
+  },
+  {
     version: '0.93',
     date: 'August 6, 2026',
     tagline: 'A real homepage, four new guides, and a quieter cookie banner',
