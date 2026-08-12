@@ -1919,6 +1919,35 @@ describe('GameEngine', () => {
       expect(typeof turnResolvedEvents[0].payload.totalDurationMs).toBe('number');
     });
 
+    it('re-arms the turn timer when turn resolution throws, so an engine error costs one turn instead of freezing the room forever (regression)', async () => {
+      // A real production outage (2026-08-12): a TypeError inside GameLoop.resolveTurn was
+      // caught by the outer try/catch, but `startTimer` sits INSIDE that try — so no new
+      // timer was ever scheduled and the room silently stopped advancing altogether. The
+      // observed symptom was "the timer ran out but the turn never changed"; the game only
+      // unstuck when an unrelated player action happened to re-trigger resolution.
+      const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+      const roomState = await engine.createRoom(host);
+      await engine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+      roomState.room.status = RoomStatus.GAME_PHASE;
+      roomState.room.currentPhaseRound = 1;
+
+      const boom = vi.spyOn(engine.gameLoop, 'resolveTurn').mockImplementation(() => {
+        throw new TypeError('b.createdAt.getTime is not a function');
+      });
+      await engine.resolveGameTurn(roomState.room.id);
+      boom.mockRestore();
+
+      // The turn itself is lost (round not advanced) — but the room is still ticking.
+      expect(roomState.room.currentPhaseRound).toBe(1);
+      expect(roomState.timer).not.toBeNull();
+      expect(roomState.timerValue).toBe(PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+
+      // ...and the failure is still recorded rather than swallowed silently.
+      const errorRows = getLoggedEvents(mockPrisma).filter((r: any) => r.eventType === 'error.persistence');
+      expect(errorRows.length).toBeGreaterThan(0);
+    });
+
     it('broadcasts round 1\'s real TURN_RESOLVED without isInitialSnapshot, even though it carries the same round number as startGame\'s earlier initial-snapshot broadcast (regression — see gameLoop.test.ts\'s matching isInitialSnapshot coverage and GamePhase.tsx\'s processedTurnKeyRef)', async () => {
       const host = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
       const roomState = await engine.createRoom(host);

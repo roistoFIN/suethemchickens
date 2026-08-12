@@ -1728,23 +1728,45 @@ describe('GameLoop', () => {
       expect(alice.legalCases[0].actualAmountPaid).toBeUndefined();
     });
 
-    it("caps the payout to the defendant's actual available cash when stakes exceed it, and drains cash to exactly zero rather than negative", () => {
+    it("caps the payout to the defendant's actual available cash when stakes exceed it, and eliminates the defendant for insolvency", () => {
+      // The cap still applies (a plaintiff can never collect money that doesn't exist),
+      // but a defendant who couldn't cover the judgment is now eliminated — see
+      // `insolventFromJudgment`. Before that fix they survived on exactly $0.00, because
+      // Step 10's bankruptcy test is `cash < 0` and the cap deliberately stops at zero;
+      // a real 2026-08-12 game had two different players survive judgments they could not
+      // pay, one of them sitting on exactly 0.00 for two consecutive rounds. Alice is
+      // therefore excluded from outcome.result.players (see BankruptedPlayer's own doc
+      // comment), so the payout is read back off Bob's copy of the same case.
       const case_ = makeCase({ status: 'awaiting_trial', stakes: 10000000, baseProbability: 1 });
       const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
       const outcome = gameLoop.resolveTurn('room-1', 1, playersWithCase(case_, { 'player-1': 5000 }));
       randomSpy.mockRestore();
 
-      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      const bankruptAlice = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1')!;
+      expect(bankruptAlice).toBeDefined();
       const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
 
-      expect(alice.legalCases[0].verdict).toBe('won');
-      expect(alice.legalCases[0].actualAmountPaid).toBeDefined();
-      expect(alice.legalCases[0].actualAmountPaid!).toBeLessThan(10000000);
-      expect(alice.legalCases[0].actualAmountPaid!).toBeGreaterThanOrEqual(0);
-      // Fully drained by this payment, but never pushed negative purely by it.
-      expect(alice.variables.cash).toBeCloseTo(0, 0);
-      // Both parties' copies of the case must agree on the real amount that changed hands.
-      expect(bob.legalCases[0].actualAmountPaid).toBe(alice.legalCases[0].actualAmountPaid);
+      expect(bob.legalCases[0].verdict).toBe('won');
+      expect(bob.legalCases[0].actualAmountPaid).toBeDefined();
+      expect(bob.legalCases[0].actualAmountPaid!).toBeLessThan(10000000);
+      expect(bob.legalCases[0].actualAmountPaid!).toBeGreaterThanOrEqual(0);
+      // Fully drained by this payment, but never pushed negative purely by it — the
+      // elimination comes from the unpayable judgment, not from a negative balance.
+      expect(bankruptAlice.finalVariables.cash).toBeCloseTo(0, 0);
+    });
+
+    it('does NOT eliminate a defendant who covered the judgment in full', () => {
+      // The insolvency rule above must key off "the cap actually bit", never off landing
+      // near zero — a defendant who pays the whole judgment and happens to end up broke is
+      // still solvent and stays in the game.
+      const case_ = makeCase({ status: 'awaiting_trial', stakes: 20000, baseProbability: 1 });
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const outcome = gameLoop.resolveTurn('room-1', 1, playersWithCase(case_, { 'player-1': 500000 }));
+      randomSpy.mockRestore();
+
+      expect(outcome.bankruptedPlayers.map((b) => b.playerId)).not.toContain('player-1');
+      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
+      expect(alice.legalCases[0].actualAmountPaid).toBeUndefined();
     });
 
     it("shares the defendant's available cash across multiple simultaneous WON verdicts, oldest filed case first (FIFO)", () => {
@@ -1776,9 +1798,14 @@ describe('GameLoop', () => {
       const outcome = gameLoop.resolveTurn('room-1', 1, players);
       randomSpy.mockRestore();
 
-      const alice = outcome.result.players.find((p) => p.playerId === 'player-1')!;
-      const caseAResult = alice.legalCases.find((c) => c.id === 'case-a')!;
-      const caseBResult = alice.legalCases.find((c) => c.id === 'case-b')!;
+      // Alice cannot cover either judgment, so she is eliminated for insolvency and drops
+      // out of result.players — read each case back off its own plaintiff's copy.
+      const bankruptAlice = outcome.bankruptedPlayers.find((b) => b.playerId === 'player-1')!;
+      expect(bankruptAlice).toBeDefined();
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+      const caseAResult = bob.legalCases.find((c) => c.id === 'case-a')!;
+      const caseBResult = carol.legalCases.find((c) => c.id === 'case-b')!;
 
       expect(caseAResult.verdict).toBe('won');
       expect(caseBResult.verdict).toBe('won');
@@ -1786,7 +1813,7 @@ describe('GameLoop', () => {
       expect(caseAResult.actualAmountPaid!).toBeGreaterThan(0);
       // ...leaving nothing left over for the later-filed case.
       expect(caseBResult.actualAmountPaid).toBe(0);
-      expect(alice.variables.cash).toBeCloseTo(0, 0);
+      expect(bankruptAlice.finalVariables.cash).toBeCloseTo(0, 0);
     });
 
     it("pays nothing to the plaintiff when the defendant's cash is already negative before this payment — only positive cash is ever shared", () => {
@@ -1814,6 +1841,79 @@ describe('GameLoop', () => {
       const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
       expect(bob.legalCases[0].verdict).toBe('won');
       expect(bob.legalCases[0].actualAmountPaid).toBe(0);
+    });
+  });
+
+  describe('resolveTurn — a case whose dates came back from JSONB as strings (regression)', () => {
+    // A real production outage (2026-08-12). `LegalCaseData.createdAt` is typed `Date` and
+    // created as `new Date()`, but it lives in `Company.engineState` — a Postgres JSONB
+    // column — and comes back as an ISO **string**. Nothing in the type system notices,
+    // because the JSONB read is cast straight to `LegalCaseData`. The FIFO comparators in
+    // `distributeCaseWaterfall` and Step 9 then called `.getTime()` on a string and threw
+    // `TypeError: b.createdAt.getTime is not a function`, which aborted the entire turn
+    // mid-elimination and (because `startTimer` sat inside the try) left the room with no
+    // turn timer at all — a permanently frozen game.
+    //
+    // No pre-existing test layer could catch this: GameLoop is pure and in-memory, so
+    // `createdAt` stays a real Date for the whole life of every unit test and simulation.
+    // These tests deliberately feed the engine what Postgres actually hands back.
+    const asJsonbRoundTrip = (c: LegalCaseData): LegalCaseData =>
+      JSON.parse(JSON.stringify(c)) as LegalCaseData;
+
+    it('sorts string-dated cases in the waterfall without throwing, when a defendant is eliminated', () => {
+      // Two unresolved cases against a defendant who bankrupts this turn — the exact shape
+      // that reached the waterfall's `.sort()`. A single-element sort never invokes the
+      // comparator, which is why this only ever blew up once a player had 2+ open cases.
+      const caseA = asJsonbRoundTrip(makeCase({
+        id: 'case-a', plaintiffId: 'player-2', defendantId: 'player-1',
+        stakes: 5000, status: 'negotiating', createdAt: new Date('2024-01-01T00:00:00Z'),
+      }));
+      const caseB = asJsonbRoundTrip(makeCase({
+        id: 'case-b', plaintiffId: 'player-3', defendantId: 'player-1',
+        stakes: 5000, status: 'negotiating', createdAt: new Date('2024-01-02T00:00:00Z'),
+      }));
+      expect(typeof (caseA.createdAt as unknown)).toBe('string'); // guard: the fixture really is what Postgres returns
+
+      const players = makePlayers([
+        {
+          id: 'player-1', name: 'Alice',
+          variables: makeVars({ cash: -50000, installedCapacity: 0, capacityUtilization: 0 }),
+          engineState: { legalCases: [caseA, caseB] },
+        },
+        { id: 'player-2', name: 'Bob', engineState: { legalCases: [caseA] } },
+        { id: 'player-3', name: 'Carol', engineState: { legalCases: [caseB] } },
+      ]);
+
+      expect(() => gameLoop.resolveTurn('room-1', 1, players)).not.toThrow();
+      const outcome = gameLoop.resolveTurn('room-1', 1, players);
+      expect(outcome.bankruptedPlayers.map((b) => b.playerId)).toContain('player-1');
+    });
+
+    it('sorts string-dated cases in Step 9 FIFO order, oldest filed first', () => {
+      const caseA = asJsonbRoundTrip(makeCase({
+        id: 'case-a', plaintiffId: 'player-2', defendantId: 'player-1',
+        stakes: 10000000, status: 'awaiting_trial', baseProbability: 1,
+        createdAt: new Date('2024-01-01T00:00:00Z'),
+      }));
+      const caseB = asJsonbRoundTrip(makeCase({
+        id: 'case-b', plaintiffId: 'player-3', defendantId: 'player-1',
+        stakes: 10000000, status: 'awaiting_trial', baseProbability: 1,
+        createdAt: new Date('2024-01-02T00:00:00Z'),
+      }));
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+      const players = makePlayers([
+        { id: 'player-1', name: 'Alice', variables: makeVars({ cash: 8000 }), engineState: { legalCases: [caseA, caseB] } },
+        { id: 'player-2', name: 'Bob', engineState: { legalCases: [caseA] } },
+        { id: 'player-3', name: 'Carol', engineState: { legalCases: [caseB] } },
+      ]);
+      const outcome = gameLoop.resolveTurn('room-1', 1, players);
+      randomSpy.mockRestore();
+
+      // Ordering survives the string dates: the older case is paid first and takes it all.
+      const bob = outcome.result.players.find((p) => p.playerId === 'player-2')!;
+      const carol = outcome.result.players.find((p) => p.playerId === 'player-3')!;
+      expect(bob.legalCases.find((c) => c.id === 'case-a')!.actualAmountPaid!).toBeGreaterThan(0);
+      expect(carol.legalCases.find((c) => c.id === 'case-b')!.actualAmountPaid).toBe(0);
     });
   });
 

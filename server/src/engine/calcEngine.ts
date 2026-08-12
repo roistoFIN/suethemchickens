@@ -525,9 +525,17 @@ export function getScheduleValue(
 // (see applyDecisionImpacts'/applyTargetImpacts' Phase 2 above) can otherwise drive one
 // of these negative (e.g. several Maintenance-Neglect-style decisions stacking a large
 // enough negative relative effect on the same field), which has no real-world meaning for
-// any of the four. Applied unconditionally after every impact application, own-effect or
+// any of these. Applied unconditionally after every impact application, own-effect or
 // target.*-routed alike, so the two code paths can never disagree about the floor.
-const ZERO_FLOOR_FIELDS = ['processingLevel', 'capacityUtilization', 'installedCapacity', 'price'] as const;
+//
+// `demand` was missing from this list until 2026-08-12, and it is the one field here that
+// ABSOLUTE `target.*` attacks accumulate into every single turn without limit (see
+// CLAUDE.md's note that an absolute target field keeps applying until the statute). A live
+// game ended with a player on `demand: -124`, which fed straight through
+// `calculateVolume` into a **negative revenue** of -$33,948 — a company being paid to
+// take its product away. Negative demand has no meaning; zero demand (sell nothing) is the
+// real floor.
+const ZERO_FLOOR_FIELDS = ['processingLevel', 'capacityUtilization', 'installedCapacity', 'price', 'demand'] as const;
 
 function clampFloorZeroFields(v: PlayerVariables): PlayerVariables {
   for (const field of ZERO_FLOOR_FIELDS) {

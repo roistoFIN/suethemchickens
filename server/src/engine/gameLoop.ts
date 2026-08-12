@@ -66,6 +66,34 @@ import type { DeployedDecision, TargetImpactResult } from './decisionEngine.js';
 import { LegalEngine } from './legalEngine.js';
 import { buildFormulaSet, type FormulaSet } from './formulaEngine.js';
 
+/**
+ * Coerce a value that is *typed* as `Date` but may actually be an ISO string, because it
+ * came back out of a Postgres JSONB column. Returns `undefined` for a missing/unparseable
+ * value rather than an `Invalid Date`, so a caller can decide its own fallback.
+ *
+ * See `readEngineState`'s own comment for the production incident that motivated this.
+ */
+function toDate(value: Date | string | undefined | null): Date | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? undefined : value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/**
+ * Filing time of a case as epoch ms, for the FIFO "oldest case paid first" tie-break used
+ * by both the bankruptcy/merger waterfall and Step 9's won-verdict cash cap.
+ *
+ * `readEngineState` already normalises `createdAt` back into a real `Date`, so this is
+ * belt-and-braces — but these two comparators are exactly where a stray string previously
+ * took down a live game mid-elimination, and a sort comparator is a uniquely bad place for
+ * a `TypeError` (it aborts the whole turn). An unparseable date sorts oldest-first, which
+ * keeps a corrupt row from jumping the queue ahead of legitimately-filed cases.
+ */
+function caseFiledAtMs(c: LegalCaseData): number {
+  return toDate(c.createdAt)?.getTime() ?? 0;
+}
+
 // ============================================================
 // Public input/output types — the boundary between GameLoop's pure
 // computation and the caller's persistence/broadcast responsibilities
@@ -931,9 +959,19 @@ export class GameLoop {
       if (!wonCasesByDefendant.has(trial.defendantId)) wonCasesByDefendant.set(trial.defendantId, []);
       wonCasesByDefendant.get(trial.defendantId)!.push(trial);
     }
+    // A defendant whose cash could not cover the full judgment is insolvent, and must be
+    // eliminated even though the cap above deliberately stops their cash going negative.
+    // A real, reported bug (2026-08-12): the cap exists so a plaintiff can never collect
+    // money that doesn't exist, but it also drained losing defendants to EXACTLY 0.00 —
+    // and Step 10's bankruptcy test is `cash < 0`, which zero fails. Two different players
+    // in the same game survived judgments they demonstrably could not pay (one sat on
+    // exactly 0.00 for two consecutive rounds). Being unable to satisfy a judgment is the
+    // textbook definition of insolvency, so it's tracked here rather than inferred from a
+    // cash balance that has been deliberately clamped.
+    const insolventFromJudgment = new Set<string>();
     for (const [defendantId, wonCases] of wonCasesByDefendant) {
       const defCtx = ctxs.get(defendantId)!;
-      wonCases.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      wonCases.sort((a, b) => caseFiledAtMs(a) - caseFiledAtMs(b));
       let available = Math.max(0, defCtx.vars.cash);
       for (const trial of wonCases) {
         const pltCtx = ctxs.get(trial.plaintiffId)!;
@@ -941,7 +979,10 @@ export class GameLoop {
         defCtx.vars.cash -= payment;
         pltCtx.vars.cash += payment;
         available -= payment;
-        if (payment < trial.stakes) trial.actualAmountPaid = payment;
+        if (payment < trial.stakes) {
+          trial.actualAmountPaid = payment;
+          insolventFromJudgment.add(defendantId);
+        }
         legalReceivedThisTurn.set(
           trial.plaintiffId,
           (legalReceivedThisTurn.get(trial.plaintiffId) ?? 0) + payment,
@@ -956,8 +997,10 @@ export class GameLoop {
 
     for (const pid of playerIds) {
       const ctx = ctxs.get(pid)!;
-      // Bankruptcy: cash < 0 on any turn
-      if (ctx.vars.cash < 0) {
+      // Bankruptcy: cash < 0 on any turn, OR a judgment this turn that the player's own
+      // cash could not cover (see `insolventFromJudgment` above — their cash reads exactly
+      // 0 by design in that case, so it can't be detected from the balance alone).
+      if (ctx.vars.cash < 0 || insolventFromJudgment.has(pid)) {
         playersToBankrupt.push(pid);
         continue;
       }
@@ -1724,7 +1767,23 @@ export class GameLoop {
         acquisitionFraction: d.acquisitionFraction,
       })),
       depreciationLedger: raw.depreciationLedger ?? [],
-      legalCases: raw.legalCases ?? [],
+      // `createdAt`/`resolvedAt` are typed `Date` but survive a Postgres JSONB round-trip
+      // as ISO **strings** — and nothing in the type system notices, because the JSONB
+      // read is cast straight to `LegalCaseData`. A real, production-breaking bug
+      // (2026-08-12): `distributeCaseWaterfall`'s FIFO sort called `.getTime()` on one of
+      // these and threw `TypeError: b.createdAt.getTime is not a function`, which aborted
+      // the whole turn mid-elimination — see `caseFiledAtMs` and `resolveGameTurn`'s
+      // `finally` for the two other halves of that fix. Normalising here, at the single
+      // chokepoint every persisted case passes through on the way back into the engine,
+      // is what keeps the rest of the engine free to treat these as real `Date`s.
+      // Deliberately tolerant of an already-`Date` value: `GameLoop` is also fed
+      // straight from in-memory state in tests and from `getInitialSnapshot`, where these
+      // never round-trip at all.
+      legalCases: (raw.legalCases ?? []).map((c) => ({
+        ...c,
+        createdAt: toDate(c.createdAt) ?? new Date(0),
+        resolvedAt: toDate(c.resolvedAt),
+      })),
       investigations: raw.investigations ?? {},
     };
   }
@@ -2014,7 +2073,7 @@ export class GameLoop {
     // oldest-first by filing order
     const casesAgainstDefunct = allCases
       .filter(c => c.defendantId === pid && c.status !== 'resolved')
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      .sort((a, b) => caseFiledAtMs(a) - caseFiledAtMs(b));
 
     // Distribute pool to plaintiffs in filing order
     let remaining = pool;

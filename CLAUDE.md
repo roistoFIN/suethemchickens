@@ -560,6 +560,57 @@ problem — read back off the *plaintiff's* copy of the case, since a bankrupted
 excluded from `outcome.result.players` per `BankruptedPlayer`'s own doc comment) pays out
 exactly $0, never a negative "payment" the other direction.
 
+**That cap then made losing defendants immortal — fixed with `insolventFromJudgment`.** A
+real, user-reported production bug (2026-08-12, diagnosed from `KpiSnapshot` history +
+`EventLog`): the cap stops a defendant's cash going negative *by design*, which drains them
+to **exactly `0.00`** — and Step 10's bankruptcy test is `cash < 0`, which zero fails. Two
+different players in the same live game survived judgments they demonstrably could not pay
+(one sat on exactly `0.00` for two consecutive rounds; the `0.00` in a `KpiSnapshot` row is
+the diagnostic fingerprint of this, since ordinary P&L essentially never lands on a round
+zero). Being unable to satisfy a judgment is the textbook definition of insolvency, so Step
+9 now records the defendant in `insolventFromJudgment` at the moment the cap actually bites
+(the same `payment < trial.stakes` branch that already sets `actualAmountPaid`), and Step
+10 eliminates on `cash < 0 || insolventFromJudgment.has(pid)`. Deliberately keyed off "the
+cap bit", never off "cash landed near zero" — a defendant who pays a judgment *in full* and
+happens to end up broke is still solvent and stays in the game (its own regression test).
+
+### `LegalCaseData.createdAt` is a `Date` in the type system and a STRING at runtime
+
+The single nastiest production bug this codebase has had (2026-08-12). `createdAt`/
+`resolvedAt` are declared `Date` (`shared/src/gameTypes.ts`) and created as `new Date()`
+(`legalEngine.ts`), but they live in `Company.engineState` — a **JSONB** column — and come
+back from Postgres as ISO **strings**. Nothing in the type system notices, because the
+JSONB read is cast straight to `LegalCaseData`. The FIFO comparators in
+`distributeCaseWaterfall` and Step 9 then called `.getTime()` on a string and threw
+`TypeError: b.createdAt.getTime is not a function`.
+
+Three things made this maximally destructive:
+- It only fires with **2+ cases against the same defendant** — a one-element `.sort()`
+  never invokes its comparator, so the bug hides through every short/simple game.
+- `distributeCaseWaterfall` only runs **while eliminating a player**, so the throw landed
+  in the middle of a bankruptcy: the whole turn was discarded, the elimination silently
+  un-happened, and the player carried on.
+- `resolveGameTurn`'s outer `catch` swallowed it, and `startTimer` sat **inside** the
+  `try` — so the room was left with **no turn timer at all**. Not one lost turn: a
+  permanently frozen game, until some unrelated player action re-triggered resolution.
+  Observed symptom, exactly as reported: *"the timer ran out but the turn didn't change."*
+
+Fixed in three places: `readEngineState` (the single chokepoint every persisted case
+passes through on the way back into the engine) normalises both fields via `toDate`;
+`caseFiledAtMs` replaces both raw `.getTime()` comparators and is tolerant by design,
+since a sort comparator is a uniquely bad place for a `TypeError`; and `resolveGameTurn`
+re-arms the timer in its `finally` when the room is still `GAME_PHASE` and no timer
+survived, degrading any *future* engine throw to one skipped turn.
+
+**No pre-existing test layer could have caught this**, which is the durable lesson:
+`GameLoop` is pure and in-memory, so `createdAt` stays a real `Date` for the entire life of
+every unit test *and* every randomized simulation. Only `tests/api/` touches real Postgres,
+and it doesn't drive a multi-turn game to a waterfall. The regression tests
+(`gameLoop.test.ts`, "a case whose dates came back from JSONB as strings") therefore feed
+the engine `JSON.parse(JSON.stringify(case))` — literally what Postgres hands back — and
+assert the fixture really is a string before exercising it. **Any new `Date` field on
+anything stored in `engineState` needs the same treatment in `readEngineState`.**
+
 ### A case's probability is earned separately by each side, and displayed as a 5-band verbal likelihood
 
 `CaseCard`'s probability chip only renders once `knowsOdds` is true: for the *plaintiff*,
@@ -891,10 +942,20 @@ decision *name* anywhere in the engine (vs. by a `DecisionDefinition` *field* li
 remember — it silently drifts from the DB with no error, and ordinary tests against the
 seeded library won't catch it.
 
-`processingLevel`/`capacityUtilization`/`installedCapacity`/`price` are floored at 0 (no
-ceiling) — `calcEngine.ts`'s `clampFloorZeroFields` helper, shared between
+`processingLevel`/`capacityUtilization`/`installedCapacity`/`price`/`demand` are floored at
+0 (no ceiling) — `calcEngine.ts`'s `clampFloorZeroFields` helper, shared between
 `applyDecisionImpacts` and `applyTargetImpacts` so a decision's own effects and its
 `target.*`-routed effects agree on the floor.
+
+**`demand` was missing from that list until 2026-08-12**, and it's the most exposed field
+of the five: it's the one an ABSOLUTE `target.*` attack accumulates into *every turn,
+without limit*, until the statute (see the "attack/defense balance" carve-out above — an
+absolute target field is deliberately never gated the way a relative one now is). A live
+game ended with a player on `demand: -124`, which fed straight through `calculateVolume`
+into a **negative revenue of -$33,948** — a company being paid to take its own product
+away. Negative demand has no meaning; zero (sell nothing) is the real floor. Worth
+remembering the shape: any *new* field that an absolute `target.*` attack can drive down
+without bound probably belongs in `ZERO_FLOOR_FIELDS` too.
 
 ### Randomized-simulation testing — a standing methodology, not a one-off
 

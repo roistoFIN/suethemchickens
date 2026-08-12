@@ -2212,6 +2212,23 @@ export class GameEngine {
       });
     } finally {
       this.advancingRooms.delete(roomId);
+      // A throw anywhere above used to leave the room with NO turn timer running at all,
+      // because `startTimer` sits inside the `try` — so a single engine exception didn't
+      // cost one turn, it silently froze the room forever (nothing would advance again
+      // until some unrelated player action happened to re-trigger resolution). That is
+      // exactly what a `TypeError` in the waterfall's FIFO sort did to a live game on
+      // 2026-08-12; see `caseFiledAtMs` for the specific bug. Re-arming here in the
+      // `finally` degrades any future engine throw to one skipped turn instead.
+      //
+      // Only re-arms when the room is genuinely still mid-game and no timer survived, so
+      // this can never double-arm alongside the successful path's own `startTimer` above,
+      // nor restart the clock on a room that just legitimately finished.
+      // `startTimer`'s own tick clears `roomState.timer` before calling in here, so a
+      // surviving non-null timer means the success path above already re-armed it.
+      const roomState = this.rooms.get(roomId);
+      if (roomState && roomState.room.status === RoomStatus.GAME_PHASE && !roomState.timer) {
+        this.startTimer(roomId, PHASE_TIMERS[RoomStatus.GAME_PHASE]);
+      }
     }
   }
 

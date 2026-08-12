@@ -652,7 +652,26 @@ describe('calcEngine', () => {
       });
     });
 
-    describe('zero-floor fields (processingLevel/capacityUtilization/installedCapacity/price)', () => {
+    describe('zero-floor fields (processingLevel/capacityUtilization/installedCapacity/price/demand)', () => {
+      // Regression for a real production bug (2026-08-12): `demand` was missing from the
+      // zero-floor set, and it is the one field here that ABSOLUTE `target.*` attacks
+      // accumulate into every turn without limit. A live game ended with a player on
+      // `demand: -124`, which fed through calculateVolume into a NEGATIVE revenue of
+      // -$33,948 — a company being paid to take its own product away.
+      it('clamps demand to 0 rather than letting stacked negative impacts drive it below zero', () => {
+        const vars = makeVars({ demand: 5 });
+        const impacts = {
+          demand: {
+            type: 'absolute' as const,
+            schedule: { 1: -130, default: -130 },
+          },
+        };
+
+        const result = applyDecisionImpacts(vars, impacts, 0);
+
+        expect(result.updatedVars.demand).toBe(0);
+      });
+
       it('clamps a field to 0 when accumulated relative impacts would drive it negative', () => {
         const vars = makeVars({ processingLevel: 0.5 });
         const impacts = {
