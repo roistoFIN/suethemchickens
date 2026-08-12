@@ -38,6 +38,19 @@ export interface DevlogEntry {
  */
 export const DEVLOG_ENTRIES: DevlogEntry[] = [
   {
+    date: 'August 12, 2026',
+    title: 'The bug that was invisible to every test we had',
+    tag: 'Engine',
+    paragraphs: [
+      "A player reported three things wrong with one match: an opponent who should have gone bankrupt in round six didn't, they themselves should have gone bankrupt in round eight and didn't either, and in round seven the timer ran out and the turn simply never changed. Three symptoms. As it turned out, one of them was a single bug wearing three disguises, and the other two were real bugs of their own.",
+      "The frozen turn came first. Every lawsuit carries a filing timestamp, used to decide who gets paid first when a collapsing company's remaining cash is shared out among the people suing it — oldest claim first, like a real insolvency. That timestamp is created as a proper date object, and the code that sorts by it quite reasonably asks the date what time it is. The problem is what happens in between: the timestamp gets written to the database, and databases store it as text. When it comes back out it is a string that merely looks like a date, and asking a string what time it is throws an error.",
+      "Three things conspired to make that as damaging as possible. Sorting a list of one never compares anything, so the bug stayed hidden until somebody had two lawsuits against them at once. The sorting only happens while a company is being eliminated, so when it did break, it broke in the middle of a bankruptcy — the whole round was thrown away and the elimination quietly un-happened. And the code that starts the next round's timer sat inside the block that failed, so no new timer was ever set. Not one lost turn: a permanently stopped clock. Exactly what the player described.",
+      "The uncomfortable part is that no test we have could ever have caught it. The game engine is deliberately pure — it takes numbers in and gives numbers out, touching no database — which is what makes it so pleasant to test, and we run hundreds of randomized full games against it. But in all of those, the timestamp never goes near a database, so it stays a real date for the entire life of every test. The bug only exists on the far side of a round trip we had no test crossing. The fix normalises those values at the single point where saved games are read back in, and the new tests hand the engine exactly what the database returns, rather than what we wish it returned.",
+      "The other two bugs were separate and, once we had the game's real round-by-round history in front of us, obvious. Lawsuit payouts are capped at whatever cash the loser actually has, so a winner can't collect money that doesn't exist — but that cap left losers on exactly zero, and the bankruptcy check asks whether you have less than zero. Both players in that match had been drained to precisely $0.00 and sailed on. Being unable to pay a judgment is the definition of insolvency, so now it ends your run. And separately, enough demand-crushing attacks stacked on one company had pushed its demand below zero and its revenue with it, to minus thirty-four thousand dollars — a company being paid to take its own product away. Demand now stops at zero.",
+      "The thing we'd do differently is nothing about the code, it's about the diagnosis. We didn't reproduce any of this locally. We read the game's saved round-by-round numbers and its error log, and all three causes were sitting there in plain text, including the exact error and the exact second it happened. A cash balance of exactly $0.00, twice, in a game where every other number has pennies on it, is not a coincidence — it's a fingerprint.",
+    ],
+  },
+  {
     date: 'August 11, 2026',
     title: 'A stranger told us our best feature was invisible',
     tag: 'Design',

@@ -38,6 +38,16 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.95',
+    date: 'August 12, 2026',
+    tagline: 'Three real bugs, found in a live match',
+    highlights: [
+      "Games could freeze. If two or more lawsuits were open against the same company at the moment that company was being knocked out, the round would fail to resolve — the timer would run out and nothing would happen. Fixed, and the game now recovers by itself: even if a round ever fails again, the clock restarts instead of the match hanging forever.",
+      "Losing a lawsuit you can't afford now bankrupts you. Payouts have always been capped at whatever cash the loser actually has, so nobody collects money that doesn't exist — but that left the loser sitting on exactly $0 and still in the game. Being unable to pay a judgment now ends your run, which is what it should have done all along. Paying in full and merely ending up broke is still survivable.",
+      "Revenue can no longer go negative. Enough demand-crushing attacks stacked on one company could push its demand below zero, which turned its revenue negative — a company effectively paying customers to take its manure. Demand now bottoms out at zero.",
+    ],
+  },
+  {
     version: '0.94',
     date: 'August 11, 2026',
     tagline: 'Dig Deeper now tells you what it actually buys you',

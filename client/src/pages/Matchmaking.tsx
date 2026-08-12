@@ -454,7 +454,7 @@ const Matchmaking: React.FC = () => {
           size="xs"
           style={{ position: 'absolute', top: 6, right: 10, color: 'var(--ink-text-soft)', opacity: 0.6 }}
         >
-          v0.94
+          v0.95
         </Text>
         <Image
           src="/images/hero.png"
