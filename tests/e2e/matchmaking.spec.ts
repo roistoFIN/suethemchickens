@@ -89,6 +89,27 @@ test.describe('Matchmaking Page', () => {
     await expect(page.getByRole('button', { name: /Start Game/i })).toBeVisible();
   });
 
+  // The lobby tells a lone player a bot opponent is on the way, and counts it down —
+  // otherwise a freshly-created room is a silent, empty screen with no indication that
+  // anything is about to happen (see botJoinNotice.ts and GameEngine.scheduleBotJoinCheck).
+  // The states AFTER this window closes (bot arrives / a real player cancels it) are
+  // covered without a browser at both layers: botJoinNotice.test.ts client-side and
+  // gameEngine.test.ts's `botJoinInMs on the room snapshot` block server-side, so this
+  // spec deliberately doesn't sit through the full 10 seconds.
+  test('should count down to the bot opponent joining a freshly-created lobby', async ({ page }) => {
+    await page.goto('/play');
+    await page.getByLabel('Your Name').fill('WaitingPlayer');
+    await page.getByRole('button', { name: /Create New Room/i }).click();
+
+    const notice = page.getByText(/A bot opponent joins in \d+s/i);
+    await expect(notice).toBeVisible();
+    // The counter must actually move — a frozen number reads as a broken lobby.
+    const first = await notice.textContent();
+    await expect(async () => {
+      expect(await notice.textContent()).not.toBe(first);
+    }).toPass({ timeout: 5000 });
+  });
+
   test('should show player list in lobby', async ({ page }) => {
     await page.goto('/play');
     await page.getByLabel('Your Name').fill('ListPlayer');

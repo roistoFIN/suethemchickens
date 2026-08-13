@@ -31,6 +31,7 @@ import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import ConsentBanner from '../components/ConsentBanner';
 import { useConsentStore } from '../stores/consentStore';
 import { usePageMeta } from '../lib/usePageMeta';
+import { botJoinNotice } from '../lib/botJoinNotice';
 import { ClientEvents, ServerEvents, type RoomInfo } from '@suethemchickens/shared';
 
 /** localStorage key for remembering the player's name across visits — see `Matchmaking`'s name-entry section. */
@@ -122,6 +123,10 @@ const Matchmaking: React.FC = () => {
   const [chatInput, setChatInput] = useState('');
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  /** Epoch ms the server-injected bot opponent is due at, or null when none is pending —
+   * see the re-anchoring effect below, and botJoinNotice.ts for what gets rendered. */
+  const [botJoinDeadline, setBotJoinDeadline] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const chatViewportRef = useRef<HTMLDivElement>(null);
   const { send, on } = useSocketStore();
   const { room, player, error, setError } = useGameStore();
@@ -194,6 +199,37 @@ const Matchmaking: React.FC = () => {
   useEffect(() => {
     chatViewportRef.current?.scrollTo({ top: chatViewportRef.current.scrollHeight });
   }, [chatMessages]);
+
+  /** Bot-join countdown. `Room.botJoinInMs` is a RELATIVE duration (see its own doc
+   * comment) precisely so it can be re-anchored here against this client's own clock —
+   * a client whose clock disagrees with the server's would otherwise show nonsense.
+   *
+   * Re-anchored on every `room` object change, not just when the number itself changes:
+   * each snapshot carries a freshly-computed remaining time, and two consecutive
+   * snapshots can legitimately carry the same rounded value. Anchoring off a stale value
+   * (a ROOM_PLAYER_JOINED, which updates the roster without a new snapshot) is harmless
+   * — `botJoinNotice` suppresses the counter outright once a second human is present. */
+  useEffect(() => {
+    if (room?.botJoinInMs == null) {
+      setBotJoinDeadline(null);
+      return;
+    }
+    const anchoredAt = Date.now();
+    setBotJoinDeadline(anchoredAt + room.botJoinInMs);
+    // Re-baseline `now` in the same pass. Without this the first render after anchoring
+    // still compares the new deadline against a `now` from up to one tick ago, which
+    // rounds UP to one second more than the real window — a 10s countdown visibly
+    // starting at "11s" before snapping back down.
+    setNow(anchoredAt);
+  }, [room]);
+
+  /** Drives the visible tick. Only runs while a deadline is actually pending, so an idle
+   * lobby (bot already here, two humans present) has no interval running at all. */
+  useEffect(() => {
+    if (botJoinDeadline === null) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [botJoinDeadline]);
 
   const handleSendChatMessage = () => {
     const trimmed = chatInput.trim();
@@ -278,6 +314,7 @@ const Matchmaking: React.FC = () => {
 
   if (room && player) {
     const isHost = player.isHost;
+    const notice = botJoinNotice(room.players, botJoinDeadline, now);
 
     return (
       <Container size="sm" py="xl">
@@ -321,6 +358,45 @@ const Matchmaking: React.FC = () => {
               </Flex>
             ))}
           </Stack>
+
+          {/* Bot-opponent status. Four mutually-exclusive states, all derived from the
+              roster plus the pending-join deadline — see botJoinNotice.ts. The counter is
+              deliberately replaced (never merely hidden) once its window closes, so the
+              lobby always explains what just happened and what's still possible: a real
+              player can join at any point, including after the bot has already arrived,
+              and takes its seat when they do. */}
+          {notice && (
+            <Alert
+              mt="md"
+              p="xs"
+              color={notice.kind === 'humans-present' ? 'teal' : 'blue'}
+              styles={{ message: { color: 'var(--ink-text)' } }}
+            >
+              {notice.kind === 'countdown' && (
+                <Text size="sm" style={{ color: 'var(--ink-text)' }}>
+                  🤖 A bot opponent joins in <strong>{notice.secondsLeft}s</strong> — if a real
+                  player joins first, no bot will join.
+                </Text>
+              )}
+              {notice.kind === 'imminent' && (
+                <Text size="sm" style={{ color: 'var(--ink-text)' }}>
+                  🤖 Sending in a bot opponent…
+                </Text>
+              )}
+              {notice.kind === 'bot-present' && (
+                <Text size="sm" style={{ color: 'var(--ink-text)' }}>
+                  🤖 A bot opponent has joined. Real players can still join at any time — the
+                  next one to arrive takes the bot's seat.
+                </Text>
+              )}
+              {notice.kind === 'humans-present' && (
+                <Text size="sm" style={{ color: 'var(--ink-text)' }}>
+                  👥 Real players are in the room — no bot will join.
+                </Text>
+              )}
+            </Alert>
+          )}
+
           <Divider my="md" color="#cbb888" />
           <Stack gap="xs" mb="md">
             <Text fw={700} style={{ color: 'var(--ink-text)' }}>Lobby Chat:</Text>

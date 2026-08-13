@@ -70,6 +70,11 @@ export class GameEngine {
   // lastTurnResults side-Map convention) since it's ephemeral scheduling state, not
   // anything a client ever needs reflected back to it.
   private botJoinTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  // Wall-clock deadline (epoch ms) each armed botJoinTimers entry will fire at — kept
+  // alongside the timer handle purely so `buildRoomSnapshot` can tell the lobby how long
+  // is left, since a Node timeout handle exposes no remaining time. Written/cleared in
+  // lockstep with botJoinTimers; never read for scheduling itself.
+  private botJoinDeadlines: Map<string, number> = new Map();
   private readonly BOT_JOIN_DELAY_MS = 10_000;
   // Clearly bot-flavored names, cycled at random each spawn — deliberately not a single
   // fixed name, so a host kicking a bot never collides with `kickedNames` blocking a
@@ -1668,10 +1673,22 @@ export class GameEngine {
     this.playerToRoom.set(player.socketId!, roomId);
     this.touchRoomActivity(roomId);
 
-    // A real human just joined — the bot that was standing in for a lack of an
-    // opponent has no reason to stay (see addBotPlayer's own doc comment). Always
-    // removed, regardless of remaining room capacity — the bot only ever exists to
-    // fill a genuine absence of a human opponent.
+    // A real human beat the countdown — cancel the pending bot join outright rather than
+    // letting the timer fire and no-op on its own "exactly one player" gate. The no-op
+    // alone was enough while this was invisible, but the lobby now shows a live counter
+    // built from `botJoinDeadlines` (see `botJoinInMsFor`), and leaving a cancelled join
+    // armed would keep that counter ticking in the lobby right up to zero before silently
+    // doing nothing — reading, to both players, like a bot is about to arrive.
+    //
+    // Scoped to THIS pending join, not the room forever: if this player later leaves and
+    // the room is back down to one lone human, `leaveRoom`/`finalizePlayerRemoval`/the
+    // kick handler each re-arm the clock exactly as they already did, so nobody ends up
+    // stranded alone in a lobby with no opponent coming.
+    this.clearBotJoinCheck(roomId);
+
+    // The bot that was standing in for a lack of an opponent has no reason to stay
+    // (see addBotPlayer's own doc comment). Always removed, regardless of remaining room
+    // capacity — the bot only ever exists to fill a genuine absence of a human opponent.
     await this.removeBotPlayers(roomState);
 
     return roomState;
@@ -1695,6 +1712,7 @@ export class GameEngine {
 
     const timer = setTimeout(() => {
       this.botJoinTimers.delete(roomId);
+      this.botJoinDeadlines.delete(roomId);
       const roomState = this.rooms.get(roomId);
       if (!roomState) return;
       if (roomState.room.status !== RoomStatus.WAITING) return;
@@ -1709,6 +1727,7 @@ export class GameEngine {
     }, this.BOT_JOIN_DELAY_MS);
 
     this.botJoinTimers.set(roomId, timer);
+    this.botJoinDeadlines.set(roomId, Date.now() + this.BOT_JOIN_DELAY_MS);
   }
 
   private clearBotJoinCheck(roomId: string): void {
@@ -1717,6 +1736,32 @@ export class GameEngine {
       clearTimeout(existing);
       this.botJoinTimers.delete(roomId);
     }
+    this.botJoinDeadlines.delete(roomId);
+  }
+
+  /**
+   * How long (ms) until `roomId`'s pending bot join fires, for `buildRoomSnapshot` to
+   * hand the lobby — `undefined` when nothing is pending or the room no longer qualifies.
+   *
+   * Deliberately re-checks the same conditions the timer's own callback checks at fire
+   * time, rather than just reporting the raw deadline: an armed timer that will end up
+   * no-opping (the host flipped the room invite-only, an admin turned `enableBotPlayers`
+   * off, a second human is present) must not keep a countdown ticking in anyone's lobby
+   * promising an opponent that will never arrive. Every ROOM_UPDATED broadcast therefore
+   * self-corrects the display with no separate cancel-and-notify path to keep in sync.
+   */
+  private botJoinInMsFor(roomState: RoomState): number | undefined {
+    const deadline = this.botJoinDeadlines.get(roomState.room.id);
+    if (deadline === undefined) return undefined;
+    if (roomState.room.status !== RoomStatus.WAITING) return undefined;
+    if (roomState.room.inviteOnly) return undefined;
+    if (!this.gameConfig?.gameSettings.enableBotPlayers) return undefined;
+
+    const players = Array.from(roomState.players.values());
+    if (players.length !== 1 || players[0].isBot) return undefined;
+
+    const remaining = deadline - Date.now();
+    return remaining > 0 ? remaining : undefined;
   }
 
   /**
@@ -1902,15 +1947,19 @@ export class GameEngine {
     } else {
       // The player whose grace period just expired might have been the host.
       await this.promoteNewHostIfNeeded(roomState);
-      this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
 
       // Same "back down to exactly one human, still WAITING" rescheduling leaveRoom does
       // — this path can just as easily be the one that gets a lobby down to one player
       // (e.g. a 2nd joiner's tab crashed before they ever clicked anything else).
+      // Deliberately re-armed BEFORE the broadcast below, so that snapshot already carries
+      // the fresh `botJoinInMs` and the lone remaining player's counter starts immediately
+      // rather than waiting for some unrelated later ROOM_UPDATED to reveal it.
       const remaining = Array.from(roomState.players.values());
       if (roomState.room.status === RoomStatus.WAITING && remaining.length === 1 && !remaining[0].isBot) {
         this.scheduleBotJoinCheck(roomId);
       }
+
+      this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
     }
   }
 
@@ -2509,6 +2558,7 @@ export class GameEngine {
       players: allPlayers,
       createdAt: roomState.room.createdAt,
       inviteOnly: roomState.room.inviteOnly,
+      botJoinInMs: this.botJoinInMsFor(roomState),
     };
   }
 
@@ -2607,14 +2657,16 @@ export class GameEngine {
     }
 
     await this.promoteNewHostIfNeeded(roomState);
-    this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
 
     // Back down to exactly one (human) player waiting alone — restart the "join a bot
     // after 10s" clock, the same as a freshly-created room (e.g. a 2nd player joined and
-    // then left again, or the host just kicked the bot).
+    // then left again, or the host just kicked the bot). Re-armed before the broadcast so
+    // the snapshot below already carries the fresh countdown (see finalizePlayerRemoval).
     if (remaining.length === 1 && !remaining[0].isBot) {
       this.scheduleBotJoinCheck(roomId);
     }
+
+    this.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: this.buildRoomSnapshot(roomState) });
 
     return { success: true };
   }
@@ -2990,14 +3042,16 @@ export function setupSocketHandlers(io: Server, prisma: PrismaClient): GameEngin
       // directly, its embedded `players` array is stale from room creation (see
       // buildRoomSnapshot's doc comment).
       await engine.promoteNewHostIfNeeded(roomState);
-      engine.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: engine.buildRoomSnapshot(roomState) });
 
       // If the host just kicked the bot itself, they're alone again — restart the
-      // "join a bot after 10s" clock (see leaveRoom's identical rescheduling).
+      // "join a bot after 10s" clock (see leaveRoom's identical rescheduling), before
+      // the broadcast so that snapshot carries the fresh countdown.
       const remainingAfterKick = Array.from(roomState.players.values());
       if (roomState.room.status === RoomStatus.WAITING && remainingAfterKick.length === 1 && !remainingAfterKick[0].isBot) {
         engine.scheduleBotJoinCheck(roomId);
       }
+
+      engine.broadcastRoomState(roomId, ServerEvents.ROOM_UPDATED, { room: engine.buildRoomSnapshot(roomState) });
     });
 
     // Voluntary departure from the WAITING-phase lobby — "Leave Room". Distinct from

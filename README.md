@@ -110,6 +110,16 @@ The room list is dynamically updated via the `rooms:list` server event, showing:
   state from the room you just left would otherwise carry into whatever's next). Distinct
   from GAME_PHASE's **Leave Game**, which forfeits (marks bankrupt) rather than removing
   the player, since there's a game in progress to lose.
+- **Bot-opponent countdown** — a lone player in a public room is told, in the lobby, that
+  a bot opponent joins in *N* seconds, counting down live (`Room.botJoinInMs`, recomputed
+  on every room snapshot; `GameEngine.scheduleBotJoinCheck`'s 10s window). The message is
+  always *replaced* rather than just disappearing when that window closes, so the lobby
+  never goes silent on the player: **a real player joining first cancels the bot outright**
+  ("Real players are in the room — no bot will join"), and if the bot does arrive, the
+  notice becomes "real players can still join at any time — the next one to arrive takes
+  the bot's seat" (accurate: `joinRoom` removes any bot the instant a human joins).
+  Cancelling is scoped to that pending join, not the room forever — if the room drops back
+  to one lone human, the countdown re-arms exactly as it already did.
 - **Host reassignment** — if the host disconnects past the grace period, gets kicked (host
   can't kick themselves, so this only ever happens via the other two paths), or leaves
   voluntarily, the longest-tenured remaining player (`GameEngine.promoteNewHostIfNeeded`)

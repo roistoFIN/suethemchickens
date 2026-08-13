@@ -2094,6 +2094,48 @@ same "thin orchestration in `GameEngine`, tested logic in the service" split
 actual I/O (`digDeeper`/`fileLawsuit`/`submitDecisions`/`toggleReady`) via the exact same
 methods a real client's socket handlers call — never a bot-only path into `GameLoop`.
 
+**The 10s wait is visible in the lobby now, and a real player joining cancels it
+explicitly.** The whole mechanic used to be entirely invisible: a freshly-created room was
+a silent screen that, ten seconds later, sprouted an opponent with no warning — and a
+player had no way to know a real human joining first would pre-empt it. `Room.botJoinInMs`
+(shared type) carries the remaining time on every room snapshot, and `botJoinNotice.ts`
+(client) turns the roster plus that value into one of four mutually-exclusive lobby
+messages: counting down, "sending in a bot opponent…", "a bot has joined — real players
+can still take its seat", and "real players are in the room — no bot will join."
+
+Three things about the shape of this are load-bearing:
+- **`botJoinInMs` is a RELATIVE duration, never an absolute timestamp**, so a client whose
+  clock disagrees with the server's can't render nonsense — the client re-anchors it
+  against its own `Date.now()` on arrival (`Matchmaking.tsx`'s anchoring effect, which
+  also re-baselines its own `now` in the same pass; without that, the first render after
+  anchoring compares the new deadline against a `now` up to one tick old and rounds UP,
+  visibly starting a 10s countdown at "11s").
+- **`GameEngine.botJoinInMsFor` re-checks every bot-join condition** (WAITING, not
+  invite-only, `enableBotPlayers`, exactly one non-bot player) rather than just reporting
+  the raw deadline — an armed timer that will end up no-opping must not leave a countdown
+  ticking toward an opponent that will never arrive. Every ROOM_UPDATED therefore
+  self-corrects the display, with no separate cancel-and-notify path to keep in sync.
+- **`joinRoom` now calls `clearBotJoinCheck` outright** instead of relying on the timer
+  firing and no-opping on its own "exactly one player" gate. The silent no-op was fine
+  while this was invisible; with a live counter, leaving a cancelled join armed would count
+  all the way down to zero in both players' lobbies first. Scoped to that pending join, not
+  the room forever (an explicit product decision) — `leaveRoom`/`finalizePlayerRemoval`/the
+  kick handler each still re-arm when the room drops back to one lone human, so nobody gets
+  stranded alone. Those three re-arm sites now schedule BEFORE their `ROOM_UPDATED`
+  broadcast, so the snapshot carries the fresh countdown; scheduling after it meant the
+  re-armed counter didn't appear until some unrelated later broadcast.
+
+Client-side, the already-waiting player learns of an arrival via `ROOM_PLAYER_JOINED`,
+which carries no fresh room snapshot (see `socketStore.ts`) — so their `botJoinInMs` is
+still the pre-cancellation value at that moment. `botJoinNotice` therefore derives
+"cancelled" from the ROSTER (more than one non-bot player), not from `botJoinInMs` going
+away; keep that precedence if you touch it, or the waiting player's counter keeps ticking
+toward a bot the server already cancelled. Covered at three layers: `botJoinNotice.test.ts`
+(every state, including the stale-deadline precedence cases), `gameEngine.test.ts`'s
+`botJoinInMs on the room snapshot` block (the value itself, all four suppression
+conditions, the re-arm, and that the re-armed value rides the broadcast), and one lean
+`matchmaking.spec.ts` E2E asserting the counter renders and actually moves.
+
 **Upgraded from pure-random after a user reported winning "using little thinking."** Still
 deliberately not optimal/exhaustive (no lookahead, no `DecisionEngine.canDeploy`
 pre-validation — an ineligible pick is just silently dropped by `GameLoop.

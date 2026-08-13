@@ -974,6 +974,148 @@ describe('GameEngine', () => {
       });
     });
 
+    // The lobby renders a live "a bot opponent joins in Ns" counter off this value (see
+    // botJoinNotice.ts client-side). It has to disappear the moment the join stops being
+    // real — otherwise a lobby counts down to an opponent that never arrives.
+    describe('botJoinInMs on the room snapshot', () => {
+      it('reports the time remaining until the bot joins a freshly-created room', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBe(10_000);
+
+        await vi.advanceTimersByTimeAsync(4_000);
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBe(6_000);
+
+        localEngine.stop();
+      });
+
+      it('is undefined once the bot has actually joined', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(Array.from(roomState.players.values()).some((p) => p.isBot)).toBe(true);
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBeUndefined();
+
+        localEngine.stop();
+      });
+
+      it('is undefined the instant a real human joins — the pending join is cancelled outright', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBe(7_000);
+
+        await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBeUndefined();
+
+        // ...and stays cancelled: no bot ever materialises for the rest of the window.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(Array.from(roomState.players.values()).some((p) => p.isBot)).toBe(false);
+
+        localEngine.stop();
+      });
+
+      it('is undefined for an invite-only room, without waiting for the timer to no-op', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        roomState.room.inviteOnly = true;
+
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBeUndefined();
+
+        localEngine.stop();
+      });
+
+      it('is undefined when enableBotPlayers is off', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+        const snapshot = localEngine.getGameConfigSnapshot();
+        await localEngine.updateGameConfigData({ ...snapshot, gameSettings: { ...snapshot.gameSettings, enableBotPlayers: false } });
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBeUndefined();
+
+        localEngine.stop();
+      });
+
+      it('re-arms with a full window when a departure leaves one human alone again', async () => {
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        const bobRoomState = await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+        const bob = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!;
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBeUndefined();
+
+        await localEngine.leaveRoom(roomState.room.id, bob.id);
+
+        expect(localEngine.buildRoomSnapshot(roomState).botJoinInMs).toBe(10_000);
+
+        localEngine.stop();
+      });
+
+      it('is carried on the ROOM_UPDATED broadcast that announces the re-armed countdown', async () => {
+        // The re-arm happens BEFORE the broadcast in leaveRoom for exactly this reason —
+        // the lone remaining player's counter has to start immediately, not on whatever
+        // unrelated ROOM_UPDATED happens to come next.
+        vi.useFakeTimers();
+        const localIo = createMockIo();
+        const localPrisma = createMockPrisma();
+        const localEngine = new GameEngine(localIo, localPrisma);
+        await localEngine.loadGameData();
+
+        const creator = { id: '', name: 'Alice', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-1' };
+        const roomState = await localEngine.createRoom(creator);
+        const bobRoomState = await localEngine.joinRoom(roomState.room.id, { id: '', name: 'Bob', roomId: '', isHost: false, bankrupt: false, socketId: 'socket-2' });
+        const bob = Array.from(bobRoomState.players.values()).find((p) => p.name === 'Bob')!;
+
+        localIo.emit.mockClear();
+        await localEngine.leaveRoom(roomState.room.id, bob.id);
+
+        expect(localIo.emit).toHaveBeenCalledWith(
+          ServerEvents.ROOM_UPDATED,
+          expect.objectContaining({ room: expect.objectContaining({ botJoinInMs: 10_000 }) }),
+        );
+
+        localEngine.stop();
+      });
+    });
+
     describe('removed the instant a human joins', () => {
       it('removes the bot (DB rows + roster entry) when a real human joins the room', async () => {
         vi.useFakeTimers();

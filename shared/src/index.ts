@@ -34,6 +34,18 @@ export interface Room {
   timer?: number;
   /** Host-toggled — excludes the room from Quick Play matching and the Available Rooms list; a direct room-code/invite-link join still works. */
   inviteOnly: boolean;
+  /**
+   * Milliseconds remaining until a server-injected bot opponent joins this room, as of
+   * the instant this snapshot was built — drives the lobby's "a bot joins in Ns" counter
+   * (see `GameEngine.scheduleBotJoinCheck` and `botJoinNotice.ts`).
+   *
+   * `undefined` whenever no bot join is pending — no timer armed, the deadline already
+   * passed, or the room no longer qualifies (started, invite-only, bots disabled, or more
+   * than one player present). Deliberately a RELATIVE duration rather than an absolute
+   * timestamp so the client never has to trust its own clock agreeing with the server's;
+   * the client re-anchors it against its own `Date.now()` on arrival.
+   */
+  botJoinInMs?: number;
 }
 
 // ============================================================
